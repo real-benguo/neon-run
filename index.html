@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#05070d">
+<meta name="description" content="霓虹狂奔 — 雨夜赛博都市楼顶第一人称跑酷">
+<title>霓虹狂奔 · NEON RUN</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+<div id="stage"></div>
+
+<div id="crosshair"><i></i><i></i></div>
+
+<div id="hud" class="off">
+  <div class="hud-l">
+    <div class="timer" id="timer">00:00.00</div>
+    <div class="best" id="best">最佳 --:--</div>
+  </div>
+  <div class="hud-c" id="cpbar"></div>
+  <div class="hud-r">
+    <div class="spd"><i id="spdfill"></i></div>
+    <div class="spdtxt" id="spdtxt">0.0 m/s</div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<div id="overlay" class="screen">
+  <div class="panel">
+    <div class="tag">ROOFTOP PARKOUR · 夜行</div>
+    <h1>霓虹<span>狂奔</span></h1>
+    <p class="sub">雨夜 · 楼顶 · 一条道跑到黑</p>
+
+    <div class="keys">
+      <div class="k"><b>W</b><b>A</b><b>S</b><b>D</b><span>移动</span></div>
+      <div class="k"><b class="wide">鼠标</b><span>转视角</span></div>
+      <div class="k"><b class="wide">空格</b><span>跳跃</span></div>
+      <div class="k"><b class="wide">Shift</b><span>冲刺</span></div>
+      <div class="k"><b class="wide">R</b><span>回检查点</span></div>
+      <div class="k"><b class="wide">Esc</b><span>松开鼠标</span></div>
+    </div>
+
+    <button id="startBtn">开 始 奔 跑</button>
+    <p class="hint">掉下去会退回最近的检查点 · 一路跑到终点的光环里就算通关</p>
+  </div>
+</div>
+
+<div id="result" class="screen off">
+  <div class="panel">
+    <div class="tag" id="rTag">通关</div>
+    <h2 id="rTime">00:00.00</h2>
+    <div class="rows" id="rRows"></div>
+    <div class="btns">
+      <button id="againBtn" class="primary">再 跑 一 次</button>
+    </div>
+  </div>
+</div>
+
+<div id="pause" class="screen off">
+  <div class="panel slim">
+    <div class="tag">已暂停</div>
+    <p class="sub">点一下继续</p>
+    <button id="resumeBtn">继 续</button>
+    <p class="hint">按 <b>R</b> 回到最近检查点</p>
+  </div>
+</div>
+
+<div id="loading">
+  <div class="lwrap">
+    <div class="ltitle">NEON RUN</div>
+    <div class="bar"><i id="barfill"></i></div>
+    <p id="loadtxt">正在点亮这座城市…</p>
+  </div>
+</div>
+
+<div id="flash"></div>
+
+<!-- 触屏控制 -->
+<div id="touch" class="off">
+  <div id="stick"><i id="stickNub"></i></div>
+  <div id="lookzone"></div>
+  <button id="jumpBtn">跳</button>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "./lib/three.module.min.js",
+    "three/addons/": "./lib/addons/"
+  }
+}
+</script>
+<script type="module" src="./main.js"></script>
+</body>
+</html>
