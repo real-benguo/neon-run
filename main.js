@@ -88,14 +88,30 @@ const SFX = {
   land: () => beep(150, 78, 0.11, 'sine', 0.1),
   cp: () => { beep(760, 760, 0.1, 'sine', 0.09); setTimeout(() => beep(1140, 1140, 0.16, 'sine', 0.08), 90); },
   fall: () => beep(320, 70, 0.42, 'sawtooth', 0.07),
+  crumble: () => beep(190, 55, 0.55, 'sawtooth', 0.1),
   win: () => { [660, 880, 1100, 1460].forEach((f, i) => setTimeout(() => beep(f, f, 0.3, 'triangle', 0.09), i * 110)); },
 };
 
 // ------------------------------------------------------------------ 关卡数据
 let SOLIDS = [];        // [x0,x1,y0,y1,z0,z1]
+let SOLIDS_OFF = [];    // 崩塌中暂时失效的碰撞盒
 let CPS = [];           // 检查点
 let START = new THREE.Vector3();
 let FINISH = { pos: new THREE.Vector3(), radius: 7 };
+let BREAKS = [];        // 会塌的台子
+let PLATES = [];        // 横扫挡板
+
+// 挡板：沿 X 往复扫过窄道，撞上会被推下去
+const PLATE_DEFS = [
+  { z: -78.0, y: 0.0, w: 0.9, h: 1.7, d: 0.34, from: -1.35, to: 1.35, period: 2.1, phase: 0 },
+  { z: -91.0, y: 0.0, w: 0.9, h: 1.7, d: 0.34, from: -1.35, to: 1.35, period: 1.8, phase: 1.7 },
+  { z: -146.0, y: 4.96, w: 1.1, h: 1.7, d: 0.34, from: -1.5, to: 1.5, period: 2.0, phase: 0.6 },
+  { z: -177.0, y: 4.96, w: 1.1, h: 1.7, d: 0.34, from: -1.5, to: 1.5, period: 1.7, phase: 2.4 },
+  { z: -250.0, y: 2.4, w: 1.4, h: 1.7, d: 0.34, from: -1.55, to: 1.55, period: 2.3, phase: 0.9 },
+  { z: -276.0, y: 2.4, w: 1.4, h: 1.7, d: 0.34, from: -1.55, to: 1.55, period: 1.9, phase: 3.1 },
+];
+const BREAK_DELAY = { e: 2.4, _: 1.4 };   // 踩上去多久开始塌
+const BREAK_RESPAWN = 2.6;
 
 const MATCFG = {
   mat_concrete:  { map: 'concrete', rough: 0.92, metal: 0.0 },
@@ -153,14 +169,32 @@ function overlapAt(s, x, y, z) {
           y + H > s[2] && y < s[3] &&
           z + R > s[4] && z - R < s[5]);
 }
+function blockedStatic(x, y, z) {
+  for (let i = 0; i < SOLIDS.length; i++) {
+    if (SOLIDS_OFF[i]) continue;
+    if (overlapAt(SOLIDS[i], x, y, z)) return true;
+  }
+  return false;
+}
 function blocked(x, y, z) {
-  for (let i = 0; i < SOLIDS.length; i++) if (overlapAt(SOLIDS[i], x, y, z)) return true;
+  if (blockedStatic(x, y, z)) return true;
+  for (let i = 0; i < PLATES.length; i++) {
+    if (overlapAt(PLATES[i].box, x, y, z)) return true;
+  }
   return false;
 }
 function groundHeight(x, z, yMax, tol) {
   const t = tol === undefined ? 0.35 : tol;
   let best = -Infinity;
-  for (const s of SOLIDS) {
+  for (let i = 0; i < SOLIDS.length; i++) {
+    if (SOLIDS_OFF[i]) continue;
+    const s = SOLIDS[i];
+    if (x + 0.12 > s[0] && x - 0.12 < s[1] && z + 0.12 > s[4] && z - 0.12 < s[5]) {
+      if (s[3] <= yMax + t && s[3] > best) best = s[3];
+    }
+  }
+  for (const pl of PLATES) {
+    const s = pl.box;
     if (x + 0.12 > s[0] && x - 0.12 < s[1] && z + 0.12 > s[4] && z - 0.12 < s[5]) {
       if (s[3] <= yMax + t && s[3] > best) best = s[3];
     }
@@ -195,9 +229,17 @@ function moveZ(d) {
 function moveY(d) {
   if (!d) return;
   const ny = P.pos.y + d;
+  const prevY = P.pos.y;          // 移动前的脚底高度：只有从上方落下才算“站上去”
   if (d < 0) {
     let top = -Infinity;
-    for (const s of SOLIDS) if (overlapAt(s, P.pos.x, ny, P.pos.z)) top = Math.max(top, s[3]);
+    for (let i = 0; i < SOLIDS.length; i++) {
+      if (SOLIDS_OFF[i]) continue;
+      const s = SOLIDS[i];
+      if (prevY >= s[3] - 0.03 && overlapAt(s, P.pos.x, ny, P.pos.z)) top = Math.max(top, s[3]);
+    }
+    for (const pl of PLATES) {
+      if (prevY >= pl.box[3] - 0.03 && overlapAt(pl.box, P.pos.x, ny, P.pos.z)) top = Math.max(top, pl.box[3]);
+    }
     if (top > -Infinity) {
       if (!P.onGround && P.airT > 0.18) { P.dip = Math.min(0.26, P.airT * 0.24); SFX.land(); }
       P.pos.y = top; P.vel.y = 0; P.onGround = true; P.airT = 0;
@@ -207,7 +249,14 @@ function moveY(d) {
     P.onGround = false;
   } else {
     let bot = Infinity;
-    for (const s of SOLIDS) if (overlapAt(s, P.pos.x, ny, P.pos.z)) bot = Math.min(bot, s[2]);
+    for (let i = 0; i < SOLIDS.length; i++) {
+      if (SOLIDS_OFF[i]) continue;
+      const s = SOLIDS[i];
+      if (prevY + CFG.height <= s[2] + 0.03 && overlapAt(s, P.pos.x, ny, P.pos.z)) bot = Math.min(bot, s[2]);
+    }
+    for (const pl of PLATES) {
+      if (prevY + CFG.height <= pl.box[2] + 0.03 && overlapAt(pl.box, P.pos.x, ny, P.pos.z)) bot = Math.min(bot, pl.box[2]);
+    }
     if (bot < Infinity) { P.pos.y = bot - CFG.height - 0.002; P.vel.y = 0; return; }
     P.pos.y = ny;
     P.onGround = false;
@@ -352,11 +401,20 @@ function setupTouch() {
 }
 
 // ------------------------------------------------------------------ 游戏流程
+function resetBreaks() {
+  for (const b of BREAKS) {
+    b.state = 0; b.t = 0;
+    SOLIDS_OFF[b.idx] = false;
+    if (b.mesh) b.mesh.position.set(0, 0, 0);
+  }
+}
+
 function respawn(manual) {
   const c = CPS[Math.min(state.cp, CPS.length - 1)];
   P.pos.set(c.pos.x, c.pos.y + 0.06, c.pos.z);
   P.vel.set(0, 0, 0);
   P.onGround = false; P.airT = 0; P.dip = 0;
+  resetBreaks();                      // 掉一次之后跳台全部复原，免得连环摔
   // 朝向路线前方
   const nxt = CPS[Math.min(state.cp + 1, CPS.length - 1)];
   const dx = nxt.pos.x - c.pos.x, dz = nxt.pos.z - c.pos.z;
@@ -386,8 +444,10 @@ function finishRun() {
   if (isBest) { state.best = t; localStorage.setItem('neonrun_best', String(t)); }
   el.rTag.textContent = isBest ? '新纪录' : '通关';
   el.rTime.textContent = fmt(t);
+  const rank = t < 58 ? ['S', 'gold'] : t < 70 ? ['A', 'hi'] : t < 88 ? ['B', ''] : ['C', ''];
   const rows = [
     ['用时', fmt(t), 'hi'],
+    ['评级', rank[0], rank[1]],
     ['检查点', state.cp + ' / ' + (CPS.length - 1), ''],
     ['坠落次数', state.falls + ' 次', state.falls === 0 ? 'gold' : ''],
     ['最佳成绩', fmt(state.best), 'gold'],
@@ -422,6 +482,102 @@ function makeRing() {
   scene.add(ringDot);
 }
 
+// ------------------------------------------------------------------ 动态机关
+function makePlates() {
+  const geo = new THREE.BoxGeometry(1, 1, 1);
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0x8A3A28, emissive: 0xFF5A20, emissiveIntensity: 0.32,
+    roughness: 0.46, metalness: 0.62
+  });
+  for (const d of PLATE_DEFS) {
+    const m = new THREE.Mesh(geo, mat);
+    m.scale.set(d.w, d.h, d.d);
+    m.position.set(0, d.y + d.h / 2, d.z);
+    scene.add(m);
+    PLATES.push({ def: d, mesh: m, box: [0, 0, 0, 0, 0, 0], c: 0, dx: 0 });
+  }
+}
+
+function makeBreaks(named, root) {
+  const key = b => b.join(',');
+  const idxMap = new Map(SOLIDS.map((s, i) => [key(s), i]));
+  const meshes = {};
+  root.traverse(o => { if (o.isMesh && o.name) meshes[o.name] = o; });
+  BREAKS = (named || []).map(n => {
+    const idx = idxMap.has(key(n.box)) ? idxMap.get(key(n.box)) : -1;
+    return {
+      idx, tag: n.tag,
+      mesh: meshes['C_break_' + n.tag] || null,
+      delay: BREAK_DELAY[n.tag] !== undefined ? BREAK_DELAY[n.tag] : BREAK_DELAY._,
+      state: 0, t: 0,
+    };
+  }).filter(b => b.idx >= 0);
+}
+
+function updatePlates(t) {
+  for (const p of PLATES) {
+    const d = p.def;
+    const s = Math.sin(t * Math.PI * 2 / d.period + d.phase);
+    const c = d.from + (d.to - d.from) * (0.5 + 0.5 * s);
+    p.dx = c - p.c;
+    p.c = c;
+    p.box[0] = c - d.w / 2; p.box[1] = c + d.w / 2;
+    p.box[2] = d.y; p.box[3] = d.y + d.h;
+    p.box[4] = d.z - d.d / 2; p.box[5] = d.z + d.d / 2;
+    p.mesh.position.x = c;
+  }
+}
+
+function pushByPlates() {
+  for (const p of PLATES) {
+    if (!overlapAt(p.box, P.pos.x, P.pos.y, P.pos.z)) continue;
+    // 被扫到的就顺着挡板运动方向推开
+    const dir = Math.abs(p.dx) > 1e-5 ? Math.sign(p.dx) : (P.pos.x >= (p.box[0] + p.box[1]) * 0.5 ? 1 : -1);
+    let moved = 0;
+    while (moved < 0.16) {
+      const nx = P.pos.x + dir * 0.04;
+      if (blockedStatic(nx, P.pos.y, P.pos.z)) break;
+      P.pos.x = nx;
+      moved += 0.04;
+      if (!overlapAt(p.box, P.pos.x, P.pos.y, P.pos.z)) break;
+    }
+  }
+}
+
+function updateBreaks(dt) {
+  for (const b of BREAKS) {
+    const s = SOLIDS[b.idx];
+    const on = !SOLIDS_OFF[b.idx] && P.onGround &&
+      P.pos.y > s[2] - 0.2 && P.pos.y < s[3] + 0.2 &&
+      P.pos.x > s[0] - 0.2 && P.pos.x < s[1] + 0.2 &&
+      P.pos.z > s[4] - 0.2 && P.pos.z < s[5] + 0.2;
+    if (b.state === 0) {
+      if (on) { b.state = 1; b.t = 0; }
+    } else if (b.state === 1) {
+      b.t += dt;
+      if (b.mesh) {
+        const sh = Math.min(0.07, b.t * 0.1);
+        b.mesh.position.x = Math.sin(b.t * 52) * sh;
+        b.mesh.position.z = Math.cos(b.t * 44) * sh;
+      }
+      if (b.t >= b.delay) {
+        b.state = 2; b.t = 0;
+        SOLIDS_OFF[b.idx] = true;
+        if (b.mesh) { b.mesh.position.x = 0; b.mesh.position.z = 0; }
+        SFX.crumble();
+      }
+    } else {
+      b.t += dt;
+      if (b.mesh) b.mesh.position.y = -Math.min(12, b.t * b.t * 14);
+      if (b.t >= BREAK_RESPAWN) {
+        b.state = 0; b.t = 0;
+        SOLIDS_OFF[b.idx] = false;
+        if (b.mesh) b.mesh.position.set(0, 0, 0);
+      }
+    }
+  }
+}
+
 // ------------------------------------------------------------------ 加载
 const loader = new GLTFLoader();
 const draco = new DRACOLoader();
@@ -446,6 +602,7 @@ const dataP = fetch('./assets/city_data.json').then(r => r.json());
 Promise.all([glbP, dataP]).then(([gltf, d]) => {
   // ---- 关卡碰撞数据
   SOLIDS = d.solids;
+  SOLIDS_OFF = new Array(SOLIDS.length).fill(false);
   CPS = d.checkpoints.map(c => ({ pos: new THREE.Vector3(c.pos[0], c.pos[1], c.pos[2]), name: c.name }));
   START.set(d.start[0], d.start[1], d.start[2]);
   FINISH.pos.set(d.finish.pos[0], d.finish.pos[1], d.finish.pos[2]);
@@ -456,6 +613,8 @@ Promise.all([glbP, dataP]).then(([gltf, d]) => {
   dressMaterials(gltf.scene, T);
   scene.add(gltf.scene);
 
+  makeBreaks(d.named, gltf.scene);
+  makePlates();
   buildCpBar(); syncCpBar(); makeRing();
   respawn(false);
   el.best.textContent = '最佳 ' + fmt(state.best);
@@ -486,6 +645,7 @@ let elapsed = 0;
 // 固定步长物理：帧率高低都不影响跳跃高度和手感
 const FIXED = 1 / 120;
 let acc = 0;
+let simT = 0;        // 机关用的模拟时间（与物理同步推进）
 
 function stepPhysics(h) {
   if (state.phase !== 'run') { P.vel.set(0, 0, 0); P.onGround = false; return; }
@@ -572,7 +732,14 @@ function tick() {
 
   acc += dt;
   let n = 0;
-  while (acc >= FIXED && n < 12) { stepPhysics(FIXED); acc -= FIXED; n++; }
+  while (acc >= FIXED && n < 12) {
+    simT += FIXED;
+    updatePlates(simT);
+    pushByPlates();
+    stepPhysics(FIXED);
+    updateBreaks(FIXED);
+    acc -= FIXED; n++;
+  }
   if (n >= 12) acc = 0;
 
   const running = state.phase === 'run';
@@ -654,16 +821,27 @@ window.__game = {
   P, state, CFG, keys, START, FINISH,
   get solids() { return SOLIDS; },
   get cps() { return CPS; },
+  get plates() { return PLATES; },
+  get breaks() { return BREAKS; },
   get yaw() { return yaw; },
   setYaw: v => { yaw = v; },
   setPitch: v => { pitch = v; },
   groundHeight,
   blocked,
+  overlapAt,
   teleport(x, y, z) { P.pos.set(x, y, z); P.vel.set(0, 0, 0); P.onGround = false; },
   jump() { P.buf = CFG.jumpBuf; },
+  resetBreaks,
   advance(sec) {                       // 手动推进物理（自动化测试用）
     const n = Math.round(sec / FIXED);
-    for (let i = 0; i < n; i++) { stepPhysics(FIXED); checkTriggers(); }
+    for (let i = 0; i < n; i++) {
+      simT += FIXED;
+      updatePlates(simT);
+      pushByPlates();
+      stepPhysics(FIXED);
+      updateBreaks(FIXED);
+      checkTriggers();
+    }
   },
   startRun, respawn,
   ready: () => CPS.length > 0 && SOLIDS.length > 0,
